@@ -62,46 +62,98 @@ non-standard configuration. Confirm against the vendor init sequence.
 
 ### MCU — STM32H7
 
-Chosen because **LTDC is a purpose-built display controller**, and the
-alternative's is not.
+Chosen for thermal margin and memory headroom. Not for rendering capability —
+several cheaper parts can drive this panel fine.
 
-The competing option was an ESP32-S3 (LCD_CAM does 16-bit RGB, TWAI does CAN,
-one chip, great ecosystem). It fails on bandwidth: a 376x960 RGB565 framebuffer
-is 705 KB, which must live in octal PSRAM and be streamed out at ~52 MB/s
-continuously through bounce buffers, against a theoretical ceiling near 80 MB/s
-— while the renderer writes to that same PSRAM. That is a permanent fight with
-tearing as the recurring symptom.
+#### The framebuffer decides everything
 
-The H7 case:
+376x960 = 360,960 pixels.
 
-- **LTDC** has its own FIFO and DMA path. Deterministic, solved.
-- **LTDC supports L8** — 8-bit indexed with a hardware CLUT. That halves the
-  framebuffer to 352 KB, which fits comfortably in internal SRAM on the
-  H7A3/H7B3 line, eliminating external memory entirely. For a dash of flat
-  colours, bars and text, 256 colours is plenty, and day/night is a palette
-  swap. The S3's RGB peripheral cannot do this; it needs real RGB565 in memory.
+| Depth | Framebuffer |
+|---|---|
+| RGB565 (16 bpp) | 705 KB |
+| L8 indexed (8 bpp) | 352 KB |
+| L4 indexed (4 bpp) | 176 KB |
+
+Memory traffic is active pixels only — the LCD DMA does not fetch during
+blanking, so the pixel clock overstates it:
+
+| Refresh | Sustained read |
+|---|---|
+| 60 Hz | ~43 MB/s |
+| 50 Hz | ~36 MB/s |
+
+Every candidate below has a display controller. Memory is what filters them.
+
+#### Candidates
+
+| Part | Core | SRAM | LTDC/RGB | Verdict |
+|---|---|---|---|---|
+| STM32L073RZ | M0+ 32 MHz | 20 KB | none | Different species. No display controller, no CAN, and 20 KB is 6% of the smallest useful framebuffer. |
+| STM32F746ZG | M7 216 MHz | 320 KB | LTDC | Has the controller, cannot feed it. 320 KB total (~240 KB contiguous) is short of even L8. Needs external SDRAM — which is exactly why the F746G-DISCO carries 8 MB of it. |
+| STM32F767ZI | M7 216 MHz | 512 KB | LTDC | L8 only, with ~16 KB of margin in SRAM1. Works; no room to grow, no double buffering, locked to 256 colours. |
+| **STM32H7A3ZI** | M7 280 MHz | 1.4 MB | LTDC | **Chosen.** RGB565 fits internally with ~700 KB spare. No external memory, no cleverness. |
+| ESP32-S3 (N8R8/N16R8) | LX7 240 MHz | 512 KB + 8 MB octal PSRAM | LCD_CAM | Capable. Loses on temperature grade and GPIO budget — see below. |
+| RP2350 | M33 150 MHz | 520 KB | PIO | 520 KB is less than one framebuffer, and external PSRAM bandwidth is worse than the S3's. |
+
+#### Why not the ESP32-S3
+
+**Bandwidth is not the reason.** That objection does not survive arithmetic:
+octal PSRAM measures ~80 MB/s in practice, so 43 MB/s at 60 Hz is roughly 53%
+duty with half the bandwidth left for drawing. The empirical case is stronger
+still — the ESP32-8048S043-class boards (Sunton, Guition, Waveshare) run
+800x480 RGB565 under LVGL in volume, and that is a **768 KB** framebuffer,
+larger than this one. Anyone re-deriving "the S3 can't do it" should stop here.
+
+The two objections that do hold:
+
+- **Temperature.** WROOM-1 modules carrying PSRAM are typically rated
+  -40 to +85 C. A closed 962 cockpit in summer, inside a sealed printed
+  enclosure beside an LED strip, does not leave comfortable margin. The H7 has
+  industrial and automotive grades, and PSRAM is usually the first thing to get
+  flaky.
+- **GPIO budget**, which is far tighter than bandwidth ever was. Octal PSRAM
+  consumes GPIO 35/36/37 on top of the flash pins. Against roughly 33 usable
+  pins: 18-20 for RGB, 3 panel init SPI, 2 RST/BL, 2 CAN, 3 LED driver, 2
+  buttons. It fits with no slack, and leaving room for the thing not yet thought
+  of is a theme of this design.
+
+If an S3 is used anyway, the part number is the whole decision: **R8 is 8 MB
+octal PSRAM and is required. R2 is 2 MB quad PSRAM — half the bus width — and
+genuinely cannot do this.**
+
+#### What the H7 buys
+
+- **LTDC** has its own FIFO and DMA path. Deterministic rather than contended.
+- **LTDC supports L8** — 8-bit indexed with a hardware CLUT, halving the
+  framebuffer and making day/night a palette swap rather than a redraw. The
+  S3's RGB peripheral cannot do this; it needs real RGB565 in memory.
 - **DMA2D (Chrom-ART)** does fills, blits and format conversion in hardware.
   A dash is entirely rectangles, bars and glyph blits — exactly this workload.
-- **FDCAN**, two instances. Second bus for free.
+- **FDCAN**, two instances. Second bus for free. (Classic CAN 2.0B is all the
+  AiM stream needs, so bxCAN parts are not disqualified by this.)
 - Boots in milliseconds. Alive before the engine catches.
-- Industrial and automotive temperature grades exist. A closed 962 cockpit in
-  summer is a real thermal environment, and PSRAM is usually what gives up first.
 - No Wi-Fi/BT radiating in the car for no reason.
 
-**Part options** (Digikey single-unit, Sept 2026):
+#### Part options
+
+Digikey single-unit, Sept 2026. Note the board price, not the chip price, is
+the real cost of entry until a carrier PCB exists.
 
 | Part | Price | Flash / RAM | Notes |
 |---|---|---|---|
-| STM32H7A3ZIT6 | ~$15 | 2 MB / 1.4 MB | Framebuffer fits internally. First choice. |
+| NUCLEO-H7A3ZI-Q | ~$40 | — | The board to actually buy first. |
+| STM32H7A3ZIT6 | ~$15 | 2 MB / 1.4 MB | For the carrier PCB. First choice. |
 | STM32H750VBT6 | ~$12 | 128 KB / 1 MB | Value line. Needs external QSPI flash (XIP), which it is designed for. |
-| STM32H743VIT6 | ~$12 | 2 MB / 1 MB | Well-trodden, huge amount of existing LVGL work. |
-
-Rejected: **RP2350** — 520 KB SRAM is less than one framebuffer, and external
-PSRAM bandwidth is worse than the S3's.
+| STM32H743VIT6 | ~$12 | 2 MB / 1 MB | Well-trodden, large body of existing LVGL work. |
 
 TODO: confirm the contiguous AXI SRAM block size on the exact H7A3 part before
 committing to an internal framebuffer. Fallback is FMC + SDRAM (~200 MB/s),
-which is routine and still comfortably above the ~52 MB/s requirement.
+comfortably above the ~43 MB/s requirement.
+
+TODO: verify in CubeMX that the LTDC alternate-function pins land on Zio
+headers actually exposed on the Nucleo-144 before relying on that board for
+panel bring-up.
 
 ### Shift light
 
@@ -279,9 +331,20 @@ Build the UI in the **SDL simulator on a desktop**. LVGL abstracts the display
 to a flush callback and a tick, so the MCU choice stops being a blocking
 decision and becomes a porting detail deferrable until the UI is actually good.
 
-A cheap ESP32-S3 RGB dev board is a fine intermediate target for proving the
-ST7701S init sequence and the CAN decode against real hardware, even though the
-production part is an H7. Same LVGL code.
+### Three tracks, deliberately independent
+
+The panel, the UI and the MCU can all be de-risked separately, and should be.
+
+| Track | Platform | Proves |
+|---|---|---|
+| UI | SDL simulator + fake CAN source | Layout, pages, alarm behaviour, EGT deviation rendering |
+| Panel | ESP32-S3 RGB dev board (~$25) | ST7701S init sequence, timings, that the 376x960 silkscreen claim is real |
+| Target | NUCLEO-H7A3ZI-Q | LTDC config, FDCAN against the real PDM stream |
+
+A Guition or Sunton 800x480 S3 board is the fastest route to a working
+`esp_lcd_rgb_panel` + LVGL setup, and ST7701 driver support exists in the ESP
+Component Registry — worth checking before writing an init sequence by hand.
+Wrong panel geometry, right peripheral, and the LVGL code ports unchanged.
 
 ### Firmware update path — decide now
 
