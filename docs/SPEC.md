@@ -325,26 +325,85 @@ button harness. Worth checking before routing anything.
 
 ---
 
-## 7. Development workflow
+## 7. Bring-up plan
 
-Build the UI in the **SDL simulator on a desktop**. LVGL abstracts the display
-to a flush callback and a tick, so the MCU choice stops being a blocking
-decision and becomes a porting detail deferrable until the UI is actually good.
+### Hardware on hand
+
+Surveyed Sept 2026. Determines what can start today versus what needs ordering.
+
+| Item | What it is | Role |
+|---|---|---|
+| Raspberry Pi Zero 2 W | RP3A0-AU, quad A53, 512 MB | **Panel bring-up rig** |
+| RP2040 board (16 MB flash) | 264 KB SRAM, USB-C | **Bench PDM simulator** |
+| LilyGO TTGO T-Display | ESP32 (original), 1.14in ST7789 135x240 SPI | LVGL familiarisation only |
+| ideaspark ESP-WROOM-32 | ESP32 (original) | Not applicable |
+
+**There is no ESP32-S3 here.** Both ESP32 boards are the original 2016 part, and
+**LCD_CAM is S3-only** — the original ESP32 has no parallel RGB output at all.
+Its I2S parallel mode drives 8-bit MCU-interface panels, not 16-bit RGB at
+26 MHz, and WROOM-32 has 520 KB SRAM with no PSRAM, so a 705 KB framebuffer has
+nowhere to live. Neither board can drive this panel. The S3 analysis in section
+2 stands as reasoning about the part; it does not describe anything on the
+bench.
 
 ### Three tracks, deliberately independent
 
-The panel, the UI and the MCU can all be de-risked separately, and should be.
+The panel, the data and the UI de-risk separately. None blocks the others.
 
 | Track | Platform | Proves |
 |---|---|---|
-| UI | SDL simulator + fake CAN source | Layout, pages, alarm behaviour, EGT deviation rendering |
-| Panel | ESP32-S3 RGB dev board (~$25) | ST7701S init sequence, timings, that the 376x960 silkscreen claim is real |
-| Target | NUCLEO-H7A3ZI-Q | LTDC config, FDCAN against the real PDM stream |
+| **Panel** | Pi Zero 2 W + DPI | ST7701S init sequence, real timings, whether 376x960 is true |
+| **CAN** | RP2040 + can2040 + transceiver | The generated decoder against real frames at real rates |
+| **UI** | SDL simulator on desktop | Layout, pages, alarm behaviour, EGT deviation rendering |
+| *(later)* Target | NUCLEO-H7A3ZI-Q | LTDC config, FDCAN against the live PDM stream |
 
-A Guition or Sunton 800x480 S3 board is the fastest route to a working
-`esp_lcd_rgb_panel` + LVGL setup, and ST7701 driver support exists in the ESP
-Component Registry — worth checking before writing an init sequence by hand.
-Wrong panel geometry, right peripheral, and the LVGL code ports unchanged.
+#### Panel track — Pi Zero 2 W
+
+Pi DPI in RGB565 mode is exactly this panel's interface: 16-bit parallel RGB
+plus PCLK/DE/HS/VS. Mainline carries `panel-sitronix-st7701`, so this is driver
+configuration rather than bringup from scratch, and 512 MB of RAM makes the
+framebuffer arithmetic of section 2 irrelevant for this purpose.
+
+From Bookworm onward it is one overlay line plus the panel's timings:
+
+```
+dtoverlay=vc4-kms-dpi-generic,rgb565          # GPIO 0-19
+dtoverlay=vc4-kms-dpi-generic,rgb565-padhi    # GPIO 0-8, 12-17, 20-24
+```
+
+The point is to answer what no datasheet will: do the vendor timings work, does
+the init sequence work, and is the panel really 376x960 given that exceeds the
+ST7701S's documented 480x864.
+
+Known friction: the 40-pin header ships unpopulated and needs soldering; DPI
+consumes ~20 GPIOs either way; and the generic DPI overlay has a documented
+history of working on CM4 while failing on Zero 2 W
+(<https://forums.raspberrypi.com/viewtopic.php?t=325759>, resolved) — read that
+before starting.
+
+This is a bring-up rig, not a candidate target. Boot time and SD corruption on
+power-cut rule a Pi out of the car, as section 2 records.
+
+#### CAN track — RP2040 as a bench PDM
+
+`can2040` implements CAN 2.0B entirely in RP2040 PIO, so the board plus a
+transceiver is a complete CAN node with no MCP2515.
+
+That makes it a bench stand-in for the PDM32: replay the frame set from
+`channels.yaml` at the configured rates, sweep RPM through the shift points,
+stop transmitting one channel to exercise the staleness path, drop oil pressure
+to exercise the latching alarm. It exercises the generated decoder rather than a
+stub, so the thing under test is the thing that ships.
+
+### To order
+
+- CAN transceivers x2 (SN65HVD230 / TJA1050 class) — one for the simulator, one
+  for the dash
+- 2x20 0.1in header for the Zero 2 W
+- NUCLEO-H7A3ZI-Q
+
+No level shifting needed anywhere: the panel, the Pi and the H7 are all 3.3V
+logic.
 
 ### Firmware update path — decide now
 
@@ -369,3 +428,7 @@ make today and one of the most expensive to defer.
 - [ ] Contiguous AXI SRAM on the chosen H7 part; internal framebuffer or SDRAM.
 - [ ] Slip ring conductor count and current rating.
 - [ ] Which PDM outputs are worth surfacing as current channels.
+- [ ] Source the vendor ST7701S init sequence and timings. Nothing else on the
+      panel track can start without it.
+- [ ] Confirm the Zero 2 W DPI overlay drives this panel at all, before trusting
+      it as the bring-up rig.

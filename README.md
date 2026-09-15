@@ -38,10 +38,18 @@ docs/RACESTUDIO.md       Generated. What to type into RaceStudio 3.
 
 ## Working on it
 
-The UI is developed in the **SDL simulator on a desktop**, not on hardware. LVGL
-abstracts the display down to a flush callback and a tick, so the MCU is a
-porting detail rather than a blocking decision. Iterate on layout at 60fps with
-a mouse instead of reflashing a board bolted inside a steering wheel.
+Three tracks, none blocking the others (`docs/SPEC.md` section 7):
+
+| Track | Platform | Proves |
+|---|---|---|
+| **Panel** | Pi Zero 2 W + DPI RGB565 | ST7701S timings and init sequence |
+| **CAN** | RP2040 + can2040 + transceiver | The generated decoder against real frames |
+| **UI** | SDL simulator on desktop | Layout, pages, alarms |
+
+The UI is developed in the simulator, not on hardware. LVGL abstracts the
+display down to a flush callback and a tick, so the MCU is a porting detail
+rather than a blocking decision. Iterate on layout at 60fps with a mouse
+instead of reflashing a board bolted inside a steering wheel.
 
 ```sh
 tools/gen_channels.py          # regenerate after editing channels.yaml
