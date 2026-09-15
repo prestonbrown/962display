@@ -1,0 +1,9 @@
+build/
+sim/build/
+*.o
+*.elf
+*.bin
+*.map
+.DS_Store
+__pycache__/
+compile_commands.json

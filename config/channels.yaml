@@ -1,0 +1,237 @@
+# 962display — single source of truth for the CAN data contract.
+#
+# This file defines both ends of the wire:
+#   * tools/gen_channels.py --> C channel table + decoder (src/app/generated/)
+#   * tools/gen_channels.py --> docs/RACESTUDIO.md, the sheet you type into
+#     RaceStudio 3 when configuring the PDM32's custom CAN output stream.
+#
+# Never edit the generated files. Edit this, regenerate, commit both.
+
+bus:
+  bitrate: 500000
+  # The dash NEVER transmits. Listen-only means a firmware fault cannot emit
+  # error frames and disturb the PDM's bus.
+  mode: listen_only
+  # Reserved ID blocks. Growth means "next free ID in the right block",
+  # never "repack everything".
+  id_blocks:
+    high: { range: [0x600, 0x60F], rate_hz: 50,  note: "RPM, boost, pressures" }
+    mid:  { range: [0x610, 0x61F], rate_hz: 20,  note: "EGT, lambda" }
+    low:  { range: [0x620, 0x63F], rate_hz: 5,   note: "temps, electrical, PDM currents" }
+
+# ---------------------------------------------------------------------------
+# Channels
+# ---------------------------------------------------------------------------
+# value = raw * scale + offset
+#
+# timeout_ms: if no frame carrying this channel arrives within this window the
+#   channel goes STALE and renders as dashes. A dash showing a confident,
+#   frozen, wrong oil pressure is strictly worse than showing nothing.
+#
+# alarms: warn_* raises a banner, crit_* raises a latching full-screen takeover.
+#   Omit any bound that does not apply.
+#
+# TODO(preston): every threshold below is a placeholder. Confirm against the
+# engine builder's numbers before this goes in the car.
+
+channels:
+  # --- high rate -----------------------------------------------------------
+  - id: rpm
+    label: "RPM"
+    unit: ""
+    scale: 1.0
+    decimals: 0
+    timeout_ms: 200
+    alarms: { warn_hi: 8000, crit_hi: 8400 }
+
+  - id: boost
+    label: "BOOST"
+    unit: "bar"
+    scale: 0.01
+    decimals: 2
+    timeout_ms: 200
+    alarms: { warn_hi: 1.10, crit_hi: 1.25 }
+
+  - id: oil_press
+    label: "OIL P"
+    unit: "bar"
+    scale: 0.01
+    decimals: 1
+    timeout_ms: 200
+    # Low oil pressure is the fault that ends the day. Latching takeover.
+    alarms: { warn_lo: 3.0, crit_lo: 2.0 }
+
+  - id: fuel_press
+    label: "FUEL P"
+    unit: "bar"
+    scale: 0.01
+    decimals: 1
+    timeout_ms: 300
+    alarms: { warn_lo: 4.5, crit_lo: 3.8 }
+
+  - id: tps
+    label: "TPS"
+    unit: "%"
+    scale: 0.1
+    decimals: 0
+    timeout_ms: 300
+
+  - id: gear
+    label: "GEAR"
+    unit: ""
+    scale: 1.0
+    decimals: 0
+    timeout_ms: 500
+
+  # --- mid rate: EGT, one per cylinder ------------------------------------
+  # Flat-six. Absolute EGT matters less than SPREAD: one cylinder 80 C above
+  # its neighbours is a lean cylinder heading for detonation.
+  - { id: egt_1, label: "EGT 1", unit: "C", scale: 1.0, decimals: 0, timeout_ms: 1000, group: egt, alarms: { warn_hi: 900, crit_hi: 950 } }
+  - { id: egt_2, label: "EGT 2", unit: "C", scale: 1.0, decimals: 0, timeout_ms: 1000, group: egt, alarms: { warn_hi: 900, crit_hi: 950 } }
+  - { id: egt_3, label: "EGT 3", unit: "C", scale: 1.0, decimals: 0, timeout_ms: 1000, group: egt, alarms: { warn_hi: 900, crit_hi: 950 } }
+  - { id: egt_4, label: "EGT 4", unit: "C", scale: 1.0, decimals: 0, timeout_ms: 1000, group: egt, alarms: { warn_hi: 900, crit_hi: 950 } }
+  - { id: egt_5, label: "EGT 5", unit: "C", scale: 1.0, decimals: 0, timeout_ms: 1000, group: egt, alarms: { warn_hi: 900, crit_hi: 950 } }
+  - { id: egt_6, label: "EGT 6", unit: "C", scale: 1.0, decimals: 0, timeout_ms: 1000, group: egt, alarms: { warn_hi: 900, crit_hi: 950 } }
+
+  - id: lambda_1
+    label: "LAM L"
+    unit: ""
+    scale: 0.001
+    decimals: 2
+    timeout_ms: 500
+  - id: lambda_2
+    label: "LAM R"
+    unit: ""
+    scale: 0.001
+    decimals: 2
+    timeout_ms: 500
+
+  # --- low rate: temperatures ---------------------------------------------
+  - id: water_temp
+    label: "WATER"
+    unit: "C"
+    scale: 0.1
+    decimals: 0
+    timeout_ms: 2000
+    alarms: { warn_hi: 105, crit_hi: 115 }
+
+  - id: oil_temp
+    label: "OIL T"
+    unit: "C"
+    scale: 0.1
+    decimals: 0
+    timeout_ms: 2000
+    alarms: { warn_hi: 125, crit_hi: 140 }
+
+  - id: air_temp
+    label: "IAT"
+    unit: "C"
+    scale: 0.1
+    decimals: 0
+    timeout_ms: 2000
+
+  - id: fuel_temp
+    label: "FUEL T"
+    unit: "C"
+    scale: 0.1
+    decimals: 0
+    timeout_ms: 2000
+
+  # --- low rate: electrical ------------------------------------------------
+  - id: battery_v
+    label: "BATT"
+    unit: "V"
+    scale: 0.01
+    decimals: 1
+    timeout_ms: 2000
+    alarms: { warn_lo: 12.4, crit_lo: 11.8 }
+
+  # PDM32 reports per-output current. You can watch a fan bearing die as its
+  # draw climbs, or catch a chafing wire before it opens a fuse mid-stint.
+  - { id: pdm_i_fan_l,   label: "FAN L",  unit: "A", scale: 0.1, decimals: 1, timeout_ms: 2000, group: pdm_current }
+  - { id: pdm_i_fan_r,   label: "FAN R",  unit: "A", scale: 0.1, decimals: 1, timeout_ms: 2000, group: pdm_current }
+  - { id: pdm_i_fuelpmp, label: "F PUMP", unit: "A", scale: 0.1, decimals: 1, timeout_ms: 2000, group: pdm_current }
+  - { id: pdm_i_waterpmp,label: "W PUMP", unit: "A", scale: 0.1, decimals: 1, timeout_ms: 2000, group: pdm_current }
+
+# ---------------------------------------------------------------------------
+# Frames — how channels are packed on the wire.
+# ---------------------------------------------------------------------------
+# Keep this DUMB: byte-aligned, no multiplexing, no bit-packing across byte
+# boundaries. The decoder should be a load and a shift, not a parser.
+
+frames:
+  - { id: 0x600, name: ENGINE_FAST,  rate_hz: 50, endian: little,
+      signals: [ {channel: rpm, offset: 0}, {channel: boost, offset: 2},
+                 {channel: oil_press, offset: 4}, {channel: fuel_press, offset: 6} ] }
+
+  - { id: 0x601, name: DRIVER_FAST,  rate_hz: 50, endian: little,
+      signals: [ {channel: tps, offset: 0}, {channel: gear, offset: 2} ] }
+
+  - { id: 0x610, name: EGT_A,        rate_hz: 20, endian: little,
+      signals: [ {channel: egt_1, offset: 0}, {channel: egt_2, offset: 2},
+                 {channel: egt_3, offset: 4}, {channel: egt_4, offset: 6} ] }
+
+  - { id: 0x611, name: EGT_B,        rate_hz: 20, endian: little,
+      signals: [ {channel: egt_5, offset: 0}, {channel: egt_6, offset: 2},
+                 {channel: lambda_1, offset: 4}, {channel: lambda_2, offset: 6} ] }
+
+  - { id: 0x620, name: TEMPS,        rate_hz: 5,  endian: little,
+      signals: [ {channel: water_temp, offset: 0}, {channel: oil_temp, offset: 2},
+                 {channel: air_temp, offset: 4}, {channel: fuel_temp, offset: 6} ] }
+
+  - { id: 0x621, name: ELECTRICAL,   rate_hz: 5,  endian: little,
+      signals: [ {channel: battery_v, offset: 0}, {channel: pdm_i_fan_l, offset: 2},
+                 {channel: pdm_i_fan_r, offset: 4}, {channel: pdm_i_fuelpmp, offset: 6} ] }
+
+  - { id: 0x622, name: ELECTRICAL_2, rate_hz: 5,  endian: little,
+      signals: [ {channel: pdm_i_waterpmp, offset: 0} ] }
+
+# ---------------------------------------------------------------------------
+# Pages — adding a page is a table entry, not a refactor.
+# ---------------------------------------------------------------------------
+pages:
+  - id: race
+    title: "RACE"
+    layout: race
+    channels: [rpm, gear, oil_press, boost, water_temp, oil_temp]
+
+  - id: engine
+    title: "ENGINE"
+    layout: bargroup
+    group: egt
+    channels: [egt_1, egt_2, egt_3, egt_4, egt_5, egt_6]
+    extra: [boost, lambda_1, lambda_2]
+
+  - id: fluids
+    title: "FLUIDS"
+    layout: grid
+    channels: [oil_press, oil_temp, fuel_press, fuel_temp, water_temp, air_temp]
+    hold_minmax: true          # volatile, RAM only. The PDM owns real logging.
+
+  - id: electrical
+    title: "ELEC"
+    layout: grid
+    channels: [battery_v, pdm_i_fan_l, pdm_i_fan_r, pdm_i_fuelpmp, pdm_i_waterpmp]
+
+  - id: diag
+    title: "DIAG"
+    layout: diagnostics     # frame counters, bus errors, per-channel age, fw version
+    channels: []
+
+# ---------------------------------------------------------------------------
+# Shift light — discrete LEDs, driven from the CAN handler, not the render loop.
+# ---------------------------------------------------------------------------
+shift_light:
+  led_count: 8
+  source: rpm
+  # TODO(preston): confirm against the engine builder's shift points.
+  # Per-gear shift points; `default` applies when gear is stale or unknown.
+  default: { start: 6800, shift: 8000, flash: 8200 }
+  per_gear:
+    1: { start: 6900, shift: 8100, flash: 8300 }
+    2: { start: 6900, shift: 8100, flash: 8300 }
+    3: { start: 6800, shift: 8000, flash: 8200 }
+    4: { start: 6800, shift: 8000, flash: 8200 }
+    5: { start: 6700, shift: 7900, flash: 8100 }
+  colors: { low: green, mid: amber, high: red, flash: red }
+  brightness: { day: 100, night: 15 }   # percent
